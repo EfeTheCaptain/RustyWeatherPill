@@ -4,20 +4,27 @@ A native Windows taskbar weather pill written in Rust. Zero `.NET` dependencies,
 
 Built from scratch using the `windows` crate (Win32 API FFI) and GDI+ for high-performance, low-memory rendering.
 
-## ✨ Features
+## ✨ Features & Screenshots
+
 - **Taskbar Pill:** Shows current temperature and weather condition emoji right on your taskbar.
 - **Dynamic Tray Icon:** The system tray icon automatically updates to match the current weather.
 - **Forecast Popup:** Left-click the pill for a GDI+ temperature graph and precipitation probability bars.
 - **Portable:** Single `.exe` (no Visual C++ Redistributable required).
+- **Theming:** 6 themes (Auto, Dark, Light, Midnight, Slate, Warm) with auto-detection for Windows dark/light mode.
 
-<img width="141" height="69" alt="2026-11-04_15-09" src="https://github.com/user-attachments/assets/a8eb9038-4030-4248-bd69-766506a475d6" />
-<img width="1086" height="536" alt="2026-11-04_15-08" src="https://github.com/user-attachments/assets/37852b21-a7bb-4202-b039-7f44d0d8109f" />
+**Dynamic Tray Icon** (Changes according to the Weather type):
+<img width="141" height="69" alt="2026-11-04_15-09" src="https://github.com/user-attachments/assets/bb9f11ef-3ddd-4710-bf49-d0dca4f5b890" />
+
+**UI and the Graph** (Graph can be toggled by clicking on the widget pill, doesn't go away unless you click on the widget or the graph itself):
+<img width="1086" height="536" alt="2026-11-04_15-08" src="https://github.com/user-attachments/assets/9a90bb5e-590c-481b-b17a-49f85d27582c" />
 
 
 ## 🚀 Download & Run
+
 1. Go to the [Releases](../../releases) page.
 2. Download the latest `RustyWeatherPill.exe` (or the `.zip`).
 3. Run it. It will automatically dock to your taskbar and appear in the system tray.
+
 
 ---
 
@@ -50,25 +57,9 @@ There is no database, no registry changes, and no hidden folders. If the power c
 ---
 
 ## 🛠️ Building from Source
+
 Requires Rust and MSVC Build Tools.
 
-```powershell
-# Standard build
-cargo build --release
-
-# Portable build (static CRT, no dependencies)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\make-portable.ps1 -Zip
-
-## ⚠️ Known Issues
-Please check the [Known Issues](KNOWN_ISSUES.md) page for current bugs and their workarounds before submitting a report.
-
-## 🚀 Download & Run
-1. Go to the [Releases](../../releases) page.
-2. Download the latest `RustyWeatherPill.exe` (or the `.zip`).
-3. Run it. It will automatically dock to your taskbar and appear in the system tray.
-
-## 🛠️ Building from Source
-Requires Rust and MSVC Build Tools.
 ```powershell
 # Standard build
 cargo build --release
