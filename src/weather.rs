@@ -59,6 +59,10 @@ struct CacheEntry {
     lat: f64,
     lon: f64,
     timestamp: String,
+    #[serde(default)]
+    temp_c: i64,
+    #[serde(default)]
+    precip_pct: i32,
 }
 
 #[derive(Clone)]
@@ -97,8 +101,8 @@ fn weather_dir() -> Option<std::path::PathBuf> {
 
 /// (UTC date, seconds of day) as an absolute counter via Rata Die — no chrono.
 fn utc_abs() -> i64 {
-    let (d, _min, sec) = time::utc_now();
-    d.to_rd() * 86400 + sec as i64
+    let (d, min, sec) = time::utc_now();
+    d.to_rd() * 86400 + min as i64 * 60 + sec as i64
 }
 
 /// .NET "o" round-trip: 2026-11-01T09:03:24.5120000Z (fraction optional, always UTC).
@@ -142,7 +146,12 @@ impl Client {
                 if fresh && entry.city == city && !city.is_empty() {
                     self.remember(city, entry.lat, entry.lon);
                     if !entry.text.is_empty() {
-                        return WeatherInfo { text: entry.text, code: entry.code, temp_c: 0, precip_pct: 0, lat: entry.lat, lon: entry.lon };
+                        let temp_c = if entry.temp_c != 0 {
+                            entry.temp_c
+                        } else {
+                            temp_from_text(&entry.text).unwrap_or(0)
+                        };
+                        return WeatherInfo { text: entry.text, code: entry.code, temp_c, precip_pct: entry.precip_pct, lat: entry.lat, lon: entry.lon };
                     }
                 }
             }
@@ -183,6 +192,8 @@ impl Client {
                 lat: geo.lat,
                 lon: geo.lon,
                 timestamp: iso_now(),
+                temp_c: temp.round() as i64,
+                precip_pct: 0,
             };
             if let Ok(json) = serde_json::to_string(&entry) {
                 let _ = crate::util::write_atomic(&p, json.as_bytes());
@@ -293,6 +304,12 @@ fn number(v: Option<&serde_json::Value>) -> Option<f64> {
     v.and_then(|v| v.as_f64())
 }
 
+/// Recover the temperature from a cached display string like "-5°C ❄️" (older caches
+/// predate the explicit `temp_c` field).
+fn temp_from_text(text: &str) -> Option<i64> {
+    text.split('°').next()?.trim().parse().ok()
+}
+
 /// '.'-decimal coordinate text regardless of locale (C# InvariantCulture).
 fn fmt_coord(v: f64) -> String {
     format!("{:.5}", v)
@@ -388,6 +405,14 @@ mod tests {
         let d = fmt_coord(21.422487);
         assert!(!d.contains(','));
         assert_eq!(d, "21.42249");
+    }
+
+    #[test]
+    fn temp_recovers_from_cached_text() {
+        assert_eq!(temp_from_text("12°C ☔"), Some(12));
+        assert_eq!(temp_from_text("-5°C ❄️"), Some(-5));
+        assert_eq!(temp_from_text("0°C ☀️"), Some(0));
+        assert_eq!(temp_from_text("garbage"), None);
     }
 
     #[test]
