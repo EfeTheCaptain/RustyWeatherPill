@@ -10,7 +10,6 @@ Built from scratch using the `windows` crate (Win32 API FFI) and GDI+ for high-p
 - **Dynamic Tray Icon:** The system tray icon automatically updates to match the current weather.
 - **Forecast Popup:** Left-click the pill for a GDI+ temperature graph and precipitation probability bars.
 - **Portable:** Single `.exe` (no Visual C++ Redistributable required).
-- **Theming:** 6 themes (Auto, Dark, Light, Midnight, Slate, Warm) with auto-detection for Windows dark/light mode.
 
 **Dynamic Tray Icon** (Changes according to the Weather type):
 <img width="141" height="69" alt="2026-11-04_15-09" src="https://github.com/user-attachments/assets/bb9f11ef-3ddd-4710-bf49-d0dca4f5b890" />
