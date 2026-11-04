@@ -11,6 +11,9 @@ Built from scratch using the `windows` crate (Win32 API FFI) and GDI+ for high-p
 - **Portable:** Single `.exe` (no Visual C++ Redistributable required).
 - **Theming:** Auto, Dark, Light, Midnight, Slate, and Warm themes.
 
+## ⚠️ Known Issues
+Please check the [Known Issues](KNOWN_ISSUES.md) page for current bugs and their workarounds before submitting a report.
+
 ## 🚀 Download & Run
 1. Go to the [Releases](../../releases) page.
 2. Download the latest `RustyWeatherPill.exe` (or the `.zip`).
