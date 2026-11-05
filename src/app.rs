@@ -9,7 +9,7 @@ use crate::ui::icon::{TrayIcon, WM_TRAY};
 use crate::ui::settings::{self, SettingsHost, SettingsResult};
 use crate::ui::theme;
 use crate::ui::weather_icons::{self, WeatherIcon};
-use crate::ui::widget::{Widget, WM_WIDGET_CLICK, WM_WIDGET_MENU, WM_WIDGET_MOVED};
+use crate::ui::widget::{Widget, WM_WIDGET_CLICK, WM_WIDGET_FULLSCREEN, WM_WIDGET_MENU, WM_WIDGET_MOVED};
 use crate::ui::window::{self, WindowHandler};
 use crate::weather::{Client, WeatherInfo, weather_description};
 use windows::core::w;
@@ -433,6 +433,17 @@ impl WindowHandler for App {
                 self.cfg.widget_offset = (wparam.0 as i32).clamp(0, 2000);
                 self.cfg.sanitize();
                 self.cfg.save();
+                Some(LRESULT(0))
+            }
+            WM_WIDGET_FULLSCREEN => {
+                // The pill hides itself behind a fullscreen app; close the forecast popup
+                // too so it can't stay above the fullscreen layer.
+                if let Some(f) = &mut self.forecast {
+                    if f.alive() {
+                        f.close_graph();
+                    }
+                }
+                self.forecast = None;
                 Some(LRESULT(0))
             }
             WM_SETTINGCHANGE => {
