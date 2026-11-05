@@ -23,7 +23,7 @@ When the app saves a file, it writes to a temporary file first, then swaps it in
 |------|-----------|
 | Weather refresh | Every 5 minutes (while the app is running) |
 | Weather cache lifetime | 45 minutes |
-| Position / visibility check | Every 30 seconds (only to make sure the pill hasn't fallen behind a fullscreen game or video) |
+| Position / visibility check | Every 30 seconds (hides the pill while a fullscreen game or video is active) |
 | Forecast popup | Only when you left-click the pill; closes when you click away or press Esc |
 
 **Important:** If the weather server is unreachable, the app simply keeps showing the last good reading it successfully fetched. It does not keep retrying in a tight loop that would drain your battery or bandwidth.

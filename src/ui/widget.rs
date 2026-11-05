@@ -31,6 +31,8 @@ pub const WM_WIDGET_CLICK: u32 = WM_APP + 2;
 pub const WM_WIDGET_MENU: u32 = WM_APP + 3;
 /// Posted to the app window after a drag; the new logical offset rides in wparam.
 pub const WM_WIDGET_MOVED: u32 = WM_APP + 9;
+/// Posted to the app window when a fullscreen app starts; the forecast must go away.
+pub const WM_WIDGET_FULLSCREEN: u32 = WM_APP + 13;
 /// Posted to the widget window by the win-event hook (raise/visibility check).
 const WM_RAISE: u32 = WM_APP + 10;
 
@@ -219,7 +221,7 @@ impl Widget {
 
         widget.resize_to_content();
         widget.render_buffer();
-        widget.sync_position();
+        widget.update_visibility();
         widget
     }
 
@@ -308,6 +310,14 @@ impl Widget {
                     if !self.suppressed {
                         self.suppressed = true;
                         self.hide();
+                        unsafe {
+                            let _ = PostMessageW(
+                                Some(self.app_hwnd),
+                                WM_WIDGET_FULLSCREEN,
+                                WPARAM(0),
+                                LPARAM(0),
+                            );
+                        }
                     }
                     return;
                 }

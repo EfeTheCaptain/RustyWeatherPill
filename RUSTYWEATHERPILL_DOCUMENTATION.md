@@ -219,7 +219,7 @@ TTL: 45 minutes. Keyed by city.
 - Emoji font ratio: `EMOJI_FONT_RATIO = 1.38` (1.5× default size vs previous)
 - Left-click → forecast toggle; Right-click → context menu
 - Drag horizontally to reposition; `widget_offset` persisted on drag commit
-- Hides on fullscreen app (via `EVENT_SYSTEM_FOREGROUND` + `EVENT_OBJECT_REORDER` hooks)
+- Hides on fullscreen app or video (via `EVENT_SYSTEM_FOREGROUND` + `EVENT_OBJECT_REORDER` hooks + `SHQueryUserNotificationState`), and closes the forecast popup when fullscreen starts
 
 ### Tray Icon (`ui/icon.rs` + `ui/weather_icons.rs`)
 
