@@ -1,6 +1,6 @@
 [package]
 name = "rusty_weather_pill"
-version = "0.1.1"
+version = "0.1.3"
 edition = "2021"
 description = "Weather in the Windows taskbar — Rust port of WeatherPill on the TaskbarPray shell foundation"
 license = "MIT"

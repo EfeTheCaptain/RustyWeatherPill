@@ -90,6 +90,16 @@ impl Client {
     fn cache_path() -> Option<std::path::PathBuf> {
         weather_dir().map(|d| d.join("weather_cache.json"))
     }
+
+    /// Drop the on-disk cache and the geocoder memo so the next fetch hits the network.
+    pub fn clear_cache(&self) {
+        if let Some(p) = Self::cache_path() {
+            let _ = std::fs::remove_file(p);
+        }
+        if let Ok(mut memo) = self.memo.lock() {
+            *memo = None;
+        }
+    }
 }
 
 /// %LOCALAPPDATA%\WeatherPill (cache companion of settings.json).

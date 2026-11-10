@@ -25,6 +25,21 @@ use crate::native::displays;
 
 const TIMER_POS: usize = 1; // 30 s: reposition / fullscreen visibility, TaskbarPray pattern
 const TIMER_WEATHER: usize = 2; // 5 min: refresh weather (cache governs actual fetch rate)
+const TIMER_RETRY: usize = 3; // one-shot-ish retry while the last fetch failed
+
+/// A fetch older than this is treated as stalled (WinHTTP timeouts total ~24-40 s), so a new
+/// attempt may start. Its late result is discarded by sequence number.
+const FETCH_STUCK_MS: u128 = 45_000;
+const RETRY_MIN_MS: u32 = 60_000;
+const RETRY_MAX_MS: u32 = 5 * 60 * 1000;
+
+fn next_retry_ms(current: u32) -> u32 {
+    current.saturating_mul(2).clamp(RETRY_MIN_MS, RETRY_MAX_MS)
+}
+
+fn fetch_is_stuck(elapsed: std::time::Duration) -> bool {
+    elapsed.as_millis() >= FETCH_STUCK_MS
+}
 
 /// Weather fetch result; lparam = Box<WeatherInfo> raw.
 const WM_WEATHER_RESULT: u32 = WM_APP + 5;
@@ -32,6 +47,7 @@ const WM_WEATHER_RESULT: u32 = WM_APP + 5;
 const CMD_FORCE_UPDATE: usize = 1001;
 const CMD_SETTINGS: usize = 1002;
 const CMD_EXIT: usize = 1003;
+const CMD_CLEAR_CACHE: usize = 1004;
 
 pub struct App {
     pub cfg: Settings,
@@ -43,7 +59,10 @@ pub struct App {
     code: i32,
     icon_kind: Option<WeatherIcon>,
     displayed_city: String,
-    refreshing: bool,
+    fetch_seq: u64,
+    fetch_started: Option<std::time::Instant>,
+    retry_ms: u32,
+    retry_pending: bool,
     settings_open: bool,
     forecast: Option<Box<Forecast>>,
     taskbar_created_msg: u32,
@@ -68,7 +87,10 @@ impl App {
             code: -1,
             icon_kind: None,
             displayed_city: String::new(),
-            refreshing: false,
+            fetch_seq: 0,
+            fetch_started: None,
+            retry_ms: RETRY_MIN_MS,
+            retry_pending: false,
             settings_open: false,
             forecast: None,
             taskbar_created_msg: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
@@ -147,24 +169,50 @@ impl App {
     }
 
     fn fetch_weather(&mut self, force: bool) {
-        if self.refreshing {
+        // A result is not the only way out of a fetch: if the HTTP attempt stalls (network
+        // change, dead proxy), this timeout lets a fresh attempt start. The stale worker is
+        // ignored by sequence number when it finally posts.
+        if !force && self.fetch_started.is_some_and(|t| !fetch_is_stuck(t.elapsed())) {
             return;
         }
-        self.refreshing = true;
+        self.fetch_seq = self.fetch_seq.wrapping_add(1);
+        let seq = self.fetch_seq;
+        self.fetch_started = Some(std::time::Instant::now());
+        self.retry_pending = false; // the timer is now a watchdog for this attempt
+        // Watchdog: if no result arrives, TIMER_RETRY fires after the stall threshold and
+        // fetch_weather() replaces the attempt. The timer is killed/rebased on every result.
+        unsafe {
+            let _ = SetTimer(
+                Some(self.hwnd),
+                TIMER_RETRY,
+                (FETCH_STUCK_MS as u32).saturating_add(1_000),
+                None,
+            );
+        }
         let client = self.client.clone();
         let city = self.cfg.city.clone();
         let target = self.hwnd.0 as isize;
         std::thread::spawn(move || {
-            let mut info = client.get_weather(&city, force);
-            // One-shot hourly read (not a poll) so the tray tooltip can show the current
-            // precipitation chance alongside type and temperature.
-            info.precip_pct = client.get_hourly(&city).first().map(|h| h.precip_pct).unwrap_or(0);
+            // A panic must never strand the in-flight latch: post an error result instead.
+            let info = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut info = client.get_weather(&city, force);
+                // One-shot hourly read (not a poll) so the tray tooltip can show the current
+                // precipitation chance alongside type and temperature. Skip it when the
+                // forecast already failed: the tooltip is not updated on error anyway, and a
+                // second doomed request would only delay the retry.
+                if info.ok() {
+                    info.precip_pct =
+                        client.get_hourly(&city).first().map(|h| h.precip_pct).unwrap_or(0);
+                }
+                info
+            }))
+            .unwrap_or_else(|_| WeatherInfo::err());
             let info = Box::new(info);
             unsafe {
                 let _ = PostMessageW(
                     Some(HWND(target as *mut _)),
                     WM_WEATHER_RESULT,
-                    WPARAM(0),
+                    WPARAM(seq as usize),
                     LPARAM(Box::into_raw(info) as isize),
                 );
             }
@@ -173,8 +221,27 @@ impl App {
 
     /// Port of Overlay.RefreshWeatherAsync: swap in fresh text; on failure keep the last good
     /// reading unless nothing has been shown yet or the city changed underneath us.
-    fn on_weather_result(&mut self, info: WeatherInfo) {
-        self.refreshing = false;
+    fn on_weather_result(&mut self, seq: u64, info: WeatherInfo) {
+        if seq != self.fetch_seq {
+            return; // a stalled attempt finished after a newer one started
+        }
+        self.fetch_started = None;
+        if info.ok() {
+            self.retry_ms = RETRY_MIN_MS;
+            self.retry_pending = false;
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_RETRY);
+            }
+        } else {
+            // Retry automatically so a restored connection is picked up in ~1 minute,
+            // backing off to at most 5 minutes while the network stays down.
+            let delay = self.retry_ms;
+            self.retry_pending = true;
+            unsafe {
+                let _ = SetTimer(Some(self.hwnd), TIMER_RETRY, delay, None);
+            }
+            self.retry_ms = next_retry_ms(delay);
+        }
         if info.ok() || self.text == "Loading..." || self.displayed_city != self.cfg.city {
             self.text = info.text.clone();
             self.code = info.code;
@@ -227,7 +294,7 @@ impl App {
     }
 
     /// The pill's right-click and the tray icon's click both open this menu
-    /// (C# ContextMenuStrip: Force Update / Settings / Exit).
+    /// (C# ContextMenuStrip: Force Update / Settings / Exit; Rust adds Clear Cache).
     fn show_menu(&mut self) {
         // A modal dialog runs its own message loop that still dispatches tray clicks; suppress
         // the menu while settings are open (TaskbarPray AppHost.showMenu).
@@ -241,6 +308,7 @@ impl App {
                 let _ = AppendMenuW(menu, flags, id, windows::core::PCWSTR(wide.as_ptr()));
             };
             add(MF_STRING, CMD_FORCE_UPDATE, "Force Update");
+            add(MF_STRING, CMD_CLEAR_CACHE, "Clear Cache");
             add(MF_STRING, CMD_SETTINGS, "Settings");
             add(MF_STRING, CMD_EXIT, "Exit");
 
@@ -285,6 +353,10 @@ impl App {
     fn command(&mut self, id: usize) {
         match id {
             CMD_FORCE_UPDATE => self.refresh_tick(true),
+            CMD_CLEAR_CACHE => {
+                self.client.clear_cache();
+                self.refresh_tick(true);
+            }
             CMD_SETTINGS => self.run_settings(),
             CMD_EXIT => self.exit(),
             _ => {}
@@ -351,6 +423,7 @@ impl App {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_POS);
             let _ = KillTimer(Some(self.hwnd), TIMER_WEATHER);
+            let _ = KillTimer(Some(self.hwnd), TIMER_RETRY);
         }
         self.forecast = None; // Widget/Forecast Drop destroys the windows
         self.widget = None;
@@ -379,13 +452,18 @@ impl WindowHandler for App {
                 match wparam.0 {
                     TIMER_POS => self.pos_tick(),
                     TIMER_WEATHER => self.refresh_tick(false),
+                    // Watchdog for an in-flight attempt, or the backoff retry after a failure.
+                    // Ignore a timer message that was already queued when a success killed it.
+                    TIMER_RETRY if self.fetch_started.is_some() || self.retry_pending => {
+                        self.refresh_tick(false)
+                    }
                     _ => {}
                 }
                 Some(LRESULT(0))
             }
             WM_WEATHER_RESULT => {
                 let info = *unsafe { Box::from_raw(lparam.0 as *mut WeatherInfo) };
-                self.on_weather_result(info);
+                self.on_weather_result(wparam.0 as u64, info);
                 Some(LRESULT(0))
             }
             WM_WIDGET_CLICK => {
@@ -474,6 +552,27 @@ impl WindowHandler for App {
             },
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn retry_backoff_doubles_and_caps() {
+        assert_eq!(next_retry_ms(RETRY_MIN_MS), 120_000);
+        assert_eq!(next_retry_ms(120_000), 240_000);
+        assert_eq!(next_retry_ms(240_000), RETRY_MAX_MS);
+        assert_eq!(next_retry_ms(RETRY_MAX_MS), RETRY_MAX_MS);
+    }
+
+    #[test]
+    fn a_fetch_older_than_the_timeout_is_stuck() {
+        assert!(!fetch_is_stuck(Duration::from_secs(1)));
+        assert!(!fetch_is_stuck(Duration::from_millis(FETCH_STUCK_MS as u64 - 1)));
+        assert!(fetch_is_stuck(Duration::from_millis(FETCH_STUCK_MS as u64)));
     }
 }
 
