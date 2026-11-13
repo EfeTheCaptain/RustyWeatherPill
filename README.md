@@ -15,7 +15,8 @@ Built from scratch using the `windows` crate (Win32 API FFI) and GDI+ for high-p
 <img width="141" height="69" alt="2026-11-04_15-09" src="https://github.com/user-attachments/assets/bb9f11ef-3ddd-4710-bf49-d0dca4f5b890" />
 
 **UI and the Graph** (Graph can be toggled by clicking on the widget pill, doesn't go away unless you click on the widget or the graph itself):
-<img width="1086" height="536" alt="2026-11-04_15-08" src="https://github.com/user-attachments/assets/9a90bb5e-590c-481b-b17a-49f85d27582c" />
+
+<img width="854" height="477" alt="2026-11-04_14-51" src="https://github.com/user-attachments/assets/088e0da1-3843-4947-8049-52c6a80faea4" />
 
 
 ## 🚀 Download & Run
