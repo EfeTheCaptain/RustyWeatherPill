@@ -1,21 +1,22 @@
 //! Themed native Win32 child controls (combo/edit/checkbox/owner-drawn buttons)
 //! plus the WM_CTLCOLOR* brush set for the settings dialog. Port of TaskbarPray's
 //! controls.rs, trimmed to what the WeatherPill-style dialog needs.
+//! Backgrounds use GDI+ anti-aliased rounded rects where possible.
 #![allow(dead_code)]
 
-use crate::ui::theme;
+use crate::ui::theme::{self, mix};
 use crate::ui::window;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, EnumFontFamiliesExW,
-    FillRect, GetDC, InvalidateRect, Polyline, ReleaseDC, RoundRect, SelectObject, SetBkMode,
+    GetDC, InvalidateRect, Polyline, ReleaseDC, SelectObject, SetBkMode,
     SetTextColor, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, DT_CENTER, DT_END_ELLIPSIS,
     DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, FF_DONTCARE, FW_BOLD, FW_NORMAL, HBRUSH, HDC,
     HFONT, LOGFONTW, OUT_DEFAULT_PRECIS, PS_SOLID, TEXTMETRICW, TRANSPARENT,
 };
 use windows::Win32::UI::Controls::{
-    SetWindowTheme, DRAWITEMSTRUCT, ODS_COMBOBOXEDIT, ODS_DISABLED, ODS_SELECTED,
+    SetWindowTheme, DRAWITEMSTRUCT, ODS_COMBOBOXEDIT, ODS_DISABLED, ODS_HOTLIGHT, ODS_SELECTED,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -24,6 +25,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CBS_OWNERDRAWFIXED, CB_ADDSTRING, CB_GETCURSEL, CB_GETLBTEXT, CB_GETLBTEXTLEN, CB_SETCURSEL,
     ES_AUTOHSCROLL, GWLP_USERDATA, HMENU, WINDOW_EX_STYLE, WINDOW_STYLE, WM_SETFONT, WS_BORDER,
     WS_CHILD, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+};
+use windows::Win32::Graphics::GdiPlus::{
+    GdipAddPathArcI, GdipAddPathLineI, GdipClosePathFigure, GdipCreateFromHDC,
+    GdipCreatePath, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath,
+    GdipFillPath, GdipSetSmoothingMode, FillModeWinding, GpBrush, GpGraphics, GpPath,
+    GpSolidFill, SmoothingModeAntiAlias,
 };
 
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -47,6 +54,71 @@ pub fn on_accent(accent: u32) -> u32 {
 
 fn solid(argb: u32) -> HBRUSH {
     unsafe { CreateSolidBrush(colorref(argb)) }
+}
+
+/// Anti-aliased rounded-rect fill via GDI+.
+/// `color` is 0xAARRGGBB. `radius` in physical pixels (already DPI-scaled by caller).
+/// If radius*2 >= w or radius*2 >= h, draws a full pill/stadium shape.
+pub unsafe fn fill_round_rect(
+    hdc: HDC,
+    x: i32, y: i32, w: i32, h: i32,
+    radius: i32,
+    color: u32,
+) {
+    let mut graphics: *mut GpGraphics = std::ptr::null_mut();
+    let mut path: *mut GpPath = std::ptr::null_mut();
+    let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+
+    // Create graphics from HDC
+    if GdipCreateFromHDC(hdc, &mut graphics).0 != 0 {
+        return;
+    }
+    GdipSetSmoothingMode(graphics, SmoothingModeAntiAlias);
+
+    // Create path
+    if GdipCreatePath(FillModeWinding, &mut path).0 != 0 {
+        GdipDeleteGraphics(graphics);
+        return;
+    }
+
+    let d = radius * 2;
+
+    if d >= w || d >= h {
+        // Full pill / stadium: two semicircles + connecting lines
+        GdipAddPathArcI(path, x, y, d, h, 90.0, 180.0);
+        GdipAddPathLineI(path, x, y + h, x + w - d, y + h);
+        GdipAddPathArcI(path, x + w - d, y, d, h, 270.0, 180.0);
+        GdipAddPathLineI(path, x + w, y + h / 2, x, y + h / 2);
+    } else {
+        // Standard rounded rect: 4 corner arcs + 4 connecting lines
+        // Top-left corner + top edge
+        GdipAddPathArcI(path, x, y, d, d, 180.0, 90.0);
+        GdipAddPathLineI(path, x + d, y, x + w - d, y);
+        // Top-right corner + right edge
+        GdipAddPathArcI(path, x + w - d, y, d, d, 270.0, 90.0);
+        GdipAddPathLineI(path, x + w, y + d, x + w, y + h - d);
+        // Bottom-right corner + bottom edge
+        GdipAddPathArcI(path, x + w - d, y + h - d, d, d, 0.0, 90.0);
+        GdipAddPathLineI(path, x + w - d, y + h, x + d, y + h);
+        // Bottom-left corner + left edge
+        GdipAddPathArcI(path, x, y + h - d, d, d, 90.0, 90.0);
+        GdipAddPathLineI(path, x, y + h - d, x, y + d);
+    }
+    GdipClosePathFigure(path);
+
+    // Create brush and fill
+    if GdipCreateSolidFill(color, &mut brush).0 != 0 {
+        GdipDeletePath(path);
+        GdipDeleteGraphics(graphics);
+        return;
+    }
+
+    GdipFillPath(graphics, brush as *mut GpBrush, path);
+
+    // Cleanup
+    GdipDeleteBrush(brush as *mut GpBrush);
+    GdipDeletePath(path);
+    GdipDeleteGraphics(graphics);
 }
 
 /// Cached WM_CTLCOLOR* brushes for the current palette.
@@ -83,7 +155,7 @@ impl Drop for Brushes {
     }
 }
 
-pub fn ui_font(family: &str, pt: f32, bold: bool, dpi: u32) -> HFONT {
+pub fn ui_font(family: &str, pt: f32, bold: bool, italic: bool, dpi: u32) -> HFONT {
     let name = window::utf16z(family);
     let height = -((pt * dpi as f32 / 72.0).round() as i32);
     unsafe {
@@ -93,7 +165,7 @@ pub fn ui_font(family: &str, pt: f32, bold: bool, dpi: u32) -> HFONT {
             0,
             0,
             if bold { FW_BOLD.0 as i32 } else { FW_NORMAL.0 as i32 },
-            0,
+            if italic { 1 } else { 0 },
             0,
             0,
             DEFAULT_CHARSET,
@@ -163,18 +235,6 @@ pub fn combo(parent: HWND, x: i32, y: i32, w: i32, h: i32, id: i32) -> HWND {
         }
     }
     c
-}
-
-/// Owner-drawn (BS_OWNERDRAW) so disabled text uses a readable dim color instead of system grey.
-/// Check state lives in the window's GWLP_USERDATA (owner-draw buttons don't auto-toggle or track
-/// BM_*CHECK), read/written via `checked`/`set_checked` and flipped on click by `toggle_check`.
-pub fn checkbox(parent: HWND, text: &str, x: i32, y: i32, w: i32, h: i32, id: i32) -> HWND {
-    create(parent, w!("BUTTON"), text, WS_TABSTOP.0 | BS_OWNERDRAW as u32, x, y, w, h, id)
-}
-
-/// Owner-drawn push button; paint it from WM_DRAWITEM via `draw_button`.
-pub fn button(parent: HWND, text: &str, x: i32, y: i32, w: i32, h: i32, id: i32) -> HWND {
-    create(parent, w!("BUTTON"), text, WS_TABSTOP.0 | BS_OWNERDRAW as u32, x, y, w, h, id)
 }
 
 pub fn set_font(h: HWND, f: HFONT) {
@@ -282,23 +342,68 @@ pub enum ButtonKind {
 }
 
 /// WM_DRAWITEM painter for `button` controls; nav kinds are start-aligned.
-pub fn draw_button(dis: &DRAWITEMSTRUCT, text: &str, font: HFONT, kind: ButtonKind, rtl: bool) {
+pub fn draw_button(dis: &DRAWITEMSTRUCT, text: &str, font: HFONT, kind: ButtonKind, rtl: bool, primary: bool, selected: bool) {
     let p = theme::current();
-    let (bg, fg) = match kind {
-        ButtonKind::Accent | ButtonKind::NavActive => (p.accent, on_accent(p.accent)),
-        ButtonKind::NavIdle => (p.panel, p.text),
-        ButtonKind::Normal => (p.bg_hover, p.text),
+
+    let hovered = (dis.itemState.0 & ODS_HOTLIGHT.0) != 0;
+    let pressed = (dis.itemState.0 & ODS_SELECTED.0) != 0;
+
+    let is_active = selected || pressed;
+
+    let (fill, border, fg) = if primary {
+        if pressed {
+            (mix(p.accent, p.bg, 0.15), None, p.bg)
+        } else if hovered {
+            (mix(p.accent, 0xFFFFFFFF, 0.10), None, p.bg)
+        } else {
+            (p.accent, None, p.bg)
+        }
+    } else if is_active {
+        (p.accent, None, p.bg)
+    } else if hovered {
+        (p.bg_hover, Some(p.accent), p.text)
+    } else {
+        (p.panel, Some(theme::BORDER), p.text)
     };
+
     let fg = if (dis.itemState.0 & ODS_DISABLED.0) != 0 { p.text_dim } else { fg };
+
     unsafe {
-        let brush = solid(bg);
-        FillRect(dis.hDC, &dis.rcItem, brush);
-        let _ = DeleteObject(brush.into());
+        // Draw 1px border as a full rounded rect, then inset fill for a clean border.
+        if let Some(border_color) = border {
+            fill_round_rect(
+                dis.hDC,
+                dis.rcItem.left, dis.rcItem.top,
+                dis.rcItem.right - dis.rcItem.left, dis.rcItem.bottom - dis.rcItem.top,
+                6,
+                border_color,
+            );
+        }
+        // Inner fill (1px inset when there's a border, full when active/no border)
+        let mut inner = dis.rcItem;
+        if border.is_some() {
+            inner.left += 1;
+            inner.top += 1;
+            inner.right -= 1;
+            inner.bottom -= 1;
+        }
+        fill_round_rect(
+            dis.hDC,
+            inner.left, inner.top,
+            inner.right - inner.left, inner.bottom - inner.top,
+            6,
+            fill,
+        );
+
         SetBkMode(dis.hDC, TRANSPARENT);
         SetTextColor(dis.hDC, colorref(fg));
         let old = SelectObject(dis.hDC, font.into());
-        let nav = matches!(kind, ButtonKind::NavActive | ButtonKind::NavIdle);
         let mut rc = dis.rcItem;
+        if pressed {
+            rc.top += 1;
+            rc.bottom += 1;
+        }
+        let nav = matches!(kind, ButtonKind::NavActive | ButtonKind::NavIdle);
         let flags = if nav {
             rc.left += 10;
             rc.right -= 10;
@@ -312,30 +417,6 @@ pub fn draw_button(dis: &DRAWITEMSTRUCT, text: &str, font: HFONT, kind: ButtonKi
     }
 }
 
-/// Fill a WM_CTLCOLOR* HDC and return the brush to hand back as the LRESULT.
-pub fn ctl_colors(hdc: HDC, text: u32, bg: u32, brush: HBRUSH) -> HBRUSH {
-    unsafe {
-        SetTextColor(hdc, colorref(text));
-        windows::Win32::Graphics::Gdi::SetBkColor(hdc, colorref(bg));
-    }
-    brush
-}
-
-fn combo_item_text(h: HWND, idx: u32) -> String {
-    unsafe {
-        let len = SendMessageW(h, CB_GETLBTEXTLEN, Some(WPARAM(idx as usize)), None).0;
-        if len <= 0 {
-            return String::new();
-        }
-        let mut buf = vec![0u16; len as usize + 1];
-        let n = SendMessageW(h, CB_GETLBTEXT, Some(WPARAM(idx as usize)), Some(LPARAM(buf.as_mut_ptr() as isize))).0;
-        if n <= 0 {
-            return String::new();
-        }
-        String::from_utf16_lossy(&buf[..n as usize])
-    }
-}
-
 /// WM_DRAWITEM painter for owner-drawn combos (selected/edit field + dropdown list items).
 /// Disabled selected text dims to `text_dim` instead of the theme's system grey.
 pub fn draw_combo(dis: &DRAWITEMSTRUCT, font: HFONT, rtl: bool) {
@@ -345,9 +426,20 @@ pub fn draw_combo(dis: &DRAWITEMSTRUCT, font: HFONT, rtl: bool) {
     let is_edit = (dis.itemState.0 & ODS_COMBOBOXEDIT.0) != 0;
     unsafe {
         let bg = if selected && !is_edit { p.accent_soft } else { p.bg_hover };
-        let brush = solid(bg);
-        FillRect(dis.hDC, &dis.rcItem, brush);
-        let _ = DeleteObject(brush.into());
+        // Inner rounded fill (1px inset)
+        let mut inner = dis.rcItem;
+        inner.left += 1;
+        inner.top += 1;
+        inner.right -= 1;
+        inner.bottom -= 1;
+        fill_round_rect(
+            dis.hDC,
+            inner.left, inner.top,
+            inner.right - inner.left, inner.bottom - inner.top,
+            6,
+            bg,
+        );
+
         if dis.itemID == u32::MAX {
             return; // empty combo, no selection to draw
         }
@@ -357,8 +449,8 @@ pub fn draw_combo(dis: &DRAWITEMSTRUCT, font: HFONT, rtl: bool) {
         let old = SelectObject(dis.hDC, font.into());
         let pad = (dis.rcItem.bottom - dis.rcItem.top) / 3;
         let mut rc = dis.rcItem;
-        rc.left += pad;
-        rc.right -= pad;
+        rc.left += pad + 1; // extra 1px for border
+        rc.right -= 1;
         let mut wide: Vec<u16> = text.encode_utf16().collect();
         let flags = DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | if rtl { DT_RIGHT } else { DT_LEFT };
         DrawTextW(dis.hDC, &mut wide, &mut rc, flags);
@@ -378,10 +470,6 @@ pub fn draw_checkbox(dis: &DRAWITEMSTRUCT, text: &str, font: HFONT, is_checked: 
     let gap = (row_h / 3).max(4);
     let gy = rc.top + (row_h - box_sz) / 2;
     unsafe {
-        let bg = solid(p.panel);
-        FillRect(dis.hDC, &rc, bg);
-        let _ = DeleteObject(bg.into());
-
         let (gx, tl, tx_right) = if rtl {
             (rc.right - box_sz, rc.left, rc.right - box_sz - gap)
         } else {
@@ -396,7 +484,7 @@ pub fn draw_checkbox(dis: &DRAWITEMSTRUCT, text: &str, font: HFONT, is_checked: 
         let br = solid(fill);
         let op = SelectObject(dis.hDC, pen.into());
         let ob = SelectObject(dis.hDC, br.into());
-        let _ = RoundRect(dis.hDC, gx, gy, gx + box_sz, gy + box_sz, radius * 2, radius * 2);
+        fill_round_rect(dis.hDC, gx, gy, box_sz, box_sz, radius, fill);
         SelectObject(dis.hDC, op);
         SelectObject(dis.hDC, ob);
         let _ = DeleteObject(pen.into());
@@ -451,4 +539,34 @@ pub fn font_families() -> Vec<String> {
     }
     list.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
     list
+}
+
+/// Returns text of combo item at idx.
+pub fn combo_item_text(h: HWND, idx: u32) -> String {
+    unsafe {
+        let len = SendMessageW(h, CB_GETLBTEXTLEN, Some(WPARAM(idx as usize)), None).0;
+        if len <= 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u16; len as usize + 1];
+        let n = SendMessageW(h, CB_GETLBTEXT, Some(WPARAM(idx as usize)), Some(LPARAM(buf.as_mut_ptr() as isize))).0;
+        if n <= 0 {
+            return String::new();
+        }
+        String::from_utf16_lossy(&buf[..n as usize])
+    }
+}
+
+/// Owner-drawn push button; paint it from WM_DRAWITEM via `draw_button`.
+pub fn button(parent: HWND, text: &str, x: i32, y: i32, w: i32, h: i32, id: i32) -> HWND {
+    create(parent, w!("BUTTON"), text, WS_TABSTOP.0 | BS_OWNERDRAW as u32, x, y, w, h, id)
+}
+
+/// Fill a WM_CTLCOLOR* HDC and return the brush to hand back as the LRESULT.
+pub fn ctl_colors(hdc: HDC, text: u32, bg: u32, brush: HBRUSH) -> HBRUSH {
+    unsafe {
+        SetTextColor(hdc, colorref(text));
+        windows::Win32::Graphics::Gdi::SetBkColor(hdc, colorref(bg));
+    }
+    brush
 }

@@ -47,18 +47,21 @@ pub struct Palette {
 }
 
 pub const DARK: Palette = Palette {
-    bg: argb(32, 32, 32),
-    bg_hover: argb(48, 48, 50),
-    panel: argb(43, 43, 46),
-    text: argb(240, 240, 240),
-    text_dim: argb(165, 170, 178),
-    accent: argb(96, 205, 255),
-    accent_soft: argb(38, 64, 78),
-    good: argb(126, 224, 158),
-    warn: argb(240, 200, 110),
-    urgent: argb(240, 130, 120),
-    is_dark: true,
+    bg:          0xFF18181C,
+    bg_hover:    0xFF252530,
+    panel:       0xFF2D2D34,
+    text:        0xFFE8E8EA,
+    text_dim:    0xFF8C8C92,
+    accent:      0xFF78BEFF,
+    accent_soft: 0xFF2A4A6A,
+    good:        0xFF34C759,
+    warn:        0xFFFFB020,
+    urgent:      0xFFFF453A,
+    is_dark:     true,
 };
+
+/// Control border color — matches graph AXIS (0xFF46464E).
+pub const BORDER: u32 = 0xFF46464E;
 
 pub const LIGHT: Palette = Palette {
     bg: argb(243, 243, 243),

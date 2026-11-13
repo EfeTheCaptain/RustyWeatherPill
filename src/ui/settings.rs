@@ -10,8 +10,8 @@ use crate::ui::window::{self, WindowHandler};
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
-use windows::Win32::Graphics::Gdi::{DeleteObject, HFONT, HDC};
-use windows::Win32::UI::Controls::DRAWITEMSTRUCT;
+use windows::Win32::Graphics::Gdi::{DeleteObject, DrawTextW, HFONT, HDC, SelectObject, SetBkMode, SetTextColor, TRANSPARENT, DT_LEFT, DT_NOCLIP, DT_SINGLELINE, DT_WORDBREAK};
+use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, DestroyWindow, DispatchMessageW, GetMessageW, IsDialogMessageW, MessageBoxW,
@@ -44,12 +44,14 @@ const SECTION_H: i32 = 22;
 const LBL_X: i32 = M;
 const LABEL_W: i32 = 176;
 const CTRL_X: i32 = LBL_X + LABEL_W + 8; // 208
-const CTRL_W: i32 = 328;
-const SMALL_W: i32 = 328;
+const CTRL_W: i32 = 220;
+const SMALL_W: i32 = 120;
+const TINY_W: i32 = 64;
+const OFFSET_W: i32 = 80;
 const BTN_W: i32 = 128;
 const BTN_H: i32 = 36;
-const CLIENT_W: i32 = 560;
-const CLIENT_H: i32 = 580;
+const CLIENT_W: i32 = 585;
+const CLIENT_H: i32 = 770;
 
 const ID_SAVE: i32 = 1001;
 const ID_CANCEL: i32 = 1002;
@@ -73,6 +75,11 @@ struct Dialog {
     scale: f32,
     brushes: controls::Brushes,
     font: HFONT,
+    header_font: HFONT,
+    tip_font: HFONT,
+    tip_rect: RECT,
+    section_cards: [RECT; 3],
+    section_headers: [RECT; 3],
     fonts: Vec<String>,
     ui_size_sel: usize,
 }
@@ -98,6 +105,11 @@ pub fn run(host: &mut dyn SettingsHost) -> SettingsResult {
         scale: 1.0,
         brushes: controls::Brushes::new(),
         font: HFONT::default(),
+        header_font: HFONT::default(),
+        tip_font: HFONT::default(),
+        tip_rect: RECT::default(),
+        section_cards: [RECT::default(); 3],
+        section_headers: [RECT::default(); 3],
         fonts: controls::font_families(),
         ui_size_sel: 1,
     });
@@ -129,10 +141,24 @@ pub fn run(host: &mut dyn SettingsHost) -> SettingsResult {
         }
     }
 
+    {
+        let pref: i32 = 2; // DWMWCP_ROUND
+        unsafe {
+            let _ = windows::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+                hwnd,
+                windows::Win32::Graphics::Dwm::DWMWA_WINDOW_CORNER_PREFERENCE,
+                &pref as *const i32 as *const _,
+                std::mem::size_of::<i32>() as u32,
+            );
+        }
+    }
+
     let dpi = unsafe { GetDpiForWindow(hwnd) };
     let dpi_scale = if dpi > 0 { dpi as f32 / 96.0 } else { 1.0 };
     dlg.scale = dpi_scale;
-    dlg.font = controls::ui_font(&theme::family(), font_pt, false, dpi.max(96));
+    dlg.font = controls::ui_font(&theme::family(), font_pt, false, false, dpi.max(96));
+    dlg.tip_font = controls::ui_font(&theme::family(), 10.0, false, true, dpi.max(96));
+    dlg.header_font = controls::ui_font(&theme::family(), 11.0, false, false, dpi.max(96));
     dlg.place_window();
     dlg.build();
     dlg.load_values();
@@ -163,6 +189,12 @@ impl Drop for Dialog {
         unsafe {
             if !self.font.is_invalid() {
                 let _ = DeleteObject(self.font.into());
+            }
+            if !self.tip_font.is_invalid() {
+                let _ = DeleteObject(self.tip_font.into());
+            }
+            if !self.header_font.is_invalid() {
+                let _ = DeleteObject(self.header_font.into());
             }
         }
     }
@@ -211,12 +243,6 @@ impl Dialog {
         h
     }
 
-    fn section_lbl(&mut self, text: &str, x: i32, y: i32, w: i32) -> HWND {
-        let h = controls::label(self.hwnd, text, self.s(x), self.s(y), self.s(w), self.s(SECTION_H));
-        controls::set_font(h, self.font);
-        h
-    }
-
     fn edit_at(&mut self, id: i32, text: &str, x: i32, y: i32, w: i32) -> HWND {
         let h = controls::edit(self.hwnd, text, self.s(x), self.s(y), self.s(w), self.s(CTRL_H), id);
         controls::set_font(h, self.font);
@@ -238,62 +264,92 @@ impl Dialog {
 
     fn build(&mut self) {
         let mut y = M;
+        let card_left = 16;
+        let card_w = CLIENT_W - 32;
+        let card_right = card_left + card_w;
+        let inner_left = card_left + 20;   // 20px left padding
+        let inner_right = card_right - 40; // 40px right padding
+        let inner_top_pad = 16;            // 16px inner top padding below card border
+        let header_gap = 16;   // px between section header bottom and card top
+        let bottom_pad = 20;   // px below last row to card bottom
+        let section_gap = 20;  // px between card bottom and next section header
 
         // --- Location ---
-        self.section_lbl("LOCATION", LBL_X, y, CLIENT_W - 2 * M);
+        self.section_headers[0] = RECT { left: card_left, top: y, right: card_left + card_w, bottom: y + self.s(SECTION_H) };
         y += self.s(SECTION_H);
-        self.lbl("City", LBL_X, y, LABEL_W, false);
-        self.edit_at(ID_CITY, "", CTRL_X, y - 2, CTRL_W);
-        y += ROW_H;
+        let card_top = y + self.s(header_gap);
+        y = card_top + inner_top_pad;
+        self.lbl("City", inner_left, y, LABEL_W, false);
+        let city_x = inner_right - CTRL_W;
+        self.edit_at(ID_CITY, "", city_x, y, CTRL_W);
+        let card_bottom = y + CTRL_H + bottom_pad;
+        y = card_bottom + self.s(section_gap);
+        self.section_cards[0] = RECT { left: card_left, top: card_top, right: card_right, bottom: card_bottom };
 
         // --- Widget Position ---
-        self.section_lbl("WIDGET POSITION", LBL_X, y, CLIENT_W - 2 * M);
+        self.section_headers[1] = RECT { left: card_left, top: y, right: card_left + card_w, bottom: y + self.s(SECTION_H) };
         y += self.s(SECTION_H);
-        self.lbl("Horizontal offset", LBL_X, y, LABEL_W, false);
-        self.edit_at(ID_OFFSET_X, "", CTRL_X, y - 2, CTRL_W);
+        let card_top = y + self.s(header_gap);
+        y = card_top + inner_top_pad;
+        // Horizontal offset row
+        self.lbl("Horizontal offset", inner_left, y, LABEL_W, false);
+        let off_x_x = inner_right - OFFSET_W;
+        self.edit_at(ID_OFFSET_X, "", off_x_x, y, OFFSET_W);
         y += ROW_H;
-        self.lbl("Vertical offset", LBL_X, y, LABEL_W, false);
-        self.edit_at(ID_OFFSET_Y, "", CTRL_X, y - 2, CTRL_W);
-        y += ROW_H;
+        // Vertical offset row
+        self.lbl("Vertical offset", inner_left, y, LABEL_W, false);
+        let off_y_x = inner_right - OFFSET_W;
+        self.edit_at(ID_OFFSET_Y, "", off_y_x, y, OFFSET_W);
+        let card_bottom = y + CTRL_H + bottom_pad;
+        y = card_bottom + self.s(section_gap);
+        self.section_cards[1] = RECT { left: card_left, top: card_top, right: card_right, bottom: card_bottom };
 
         // --- Appearance ---
-        self.section_lbl("APPEARANCE", LBL_X, y, CLIENT_W - 2 * M);
+        self.section_headers[2] = RECT { left: card_left, top: y, right: card_left + card_w, bottom: y + self.s(SECTION_H) };
         y += self.s(SECTION_H);
-        self.lbl("Font family", LBL_X, y, LABEL_W, false);
-        let fonts = self.combo_at(ID_FONT, CTRL_X, y - 2, CTRL_W);
+        let card_top = y + self.s(header_gap);
+        y = card_top + inner_top_pad;
+        self.lbl("Font family", inner_left, y, LABEL_W, false);
+        let font_x = inner_right - CTRL_W;
+        let fonts = self.combo_at(ID_FONT, font_x, y, CTRL_W);
         for f in self.fonts.clone() {
             controls::combo_add(fonts, &f);
         }
         controls::combo_set_dropped_width(fonts, 600);
         y += ROW_H;
 
-        self.lbl("Font size (pt)", LBL_X, y, LABEL_W, false);
-        self.edit_at(ID_FONT_SIZE, "", CTRL_X, y - 2, SMALL_W);
+        self.lbl("Font size (pt)", inner_left, y, LABEL_W, false);
+        let font_size_x = inner_right - TINY_W;
+        self.edit_at(ID_FONT_SIZE, "", font_size_x, y, TINY_W);
         y += ROW_H;
 
-        self.lbl("Graph scale", LBL_X, y, LABEL_W, false);
-        let graph = self.combo_at(ID_GRAPH, CTRL_X, y - 2, SMALL_W);
+        self.lbl("Graph scale", inner_left, y, LABEL_W, false);
+        let graph_x = inner_right - SMALL_W;
+        let graph = self.combo_at(ID_GRAPH, graph_x, y, SMALL_W);
         for g in GRAPH_SCALES {
             controls::combo_add(graph, &format!("{:.2}x", g));
         }
         controls::combo_set_dropped_width(graph, 220);
         y += ROW_H;
 
-        self.lbl("Interface size", LBL_X, y, LABEL_W, false);
-        let bw = 96;
-        self.btn_at(ID_UI_SMALL, "Small", CTRL_X, y, bw, CTRL_H);
-        self.btn_at(ID_UI_MEDIUM, "Medium", CTRL_X + bw + 8, y, bw, CTRL_H);
-        self.btn_at(ID_UI_LARGE, "Large", CTRL_X + 2 * (bw + 8), y, bw, CTRL_H);
-        y += ROW_H;
+        self.lbl("Interface size", inner_left, y, LABEL_W, false);
+        let bw = 88;
+        let gap = 10;
+        self.btn_at(ID_UI_SMALL, "Small", CTRL_X, y, bw, 32);
+        self.btn_at(ID_UI_MEDIUM, "Medium", CTRL_X + bw + gap, y, bw, 32);
+        self.btn_at(ID_UI_LARGE, "Large", CTRL_X + 2 * (bw + gap), y, bw, 32);
+        let card_bottom = y + 32 + bottom_pad;
+        y = card_bottom + self.s(section_gap);
+        self.section_cards[2] = RECT { left: card_left, top: card_top, right: card_right, bottom: card_bottom };
 
         // Keep the usage hint visually separate from editable settings.
-        self.lbl(
-            "Tip: Drag the pill to reposition it. Left-click opens the forecast.",
-            LBL_X,
-            y + 2,
-            CLIENT_W - 2 * M,
-            true,
-        );
+        // Drawn via DrawTextW in WM_ERASEBKGND with word-wrap; stored rect used at paint time.
+        self.tip_rect = RECT {
+            left: M,
+            top: y + 2,
+            right: CLIENT_W - M,
+            bottom: y + 2 + self.s(32),
+        };
         y += ROW_H;
 
         // Actions share a baseline and sit flush to the lower-right edge.
@@ -439,6 +495,74 @@ impl WindowHandler for Dialog {
                     );
                     windows::Win32::Graphics::Gdi::FillRect(hdc, &rc, brush);
                     let _ = windows::Win32::Graphics::Gdi::DeleteObject(brush.into());
+
+                    // Section cards: rounded-rect panels behind each section.
+                    // Outer pass draws the border color, inner pass (1px inset) draws the panel fill.
+                    let p = theme::current();
+                    let card_radius = self.s(8);
+                    for card in self.section_cards.iter() {
+                        if card.left == 0 && card.top == 0 && card.right == 0 && card.bottom == 0 {
+                            continue; // not yet initialized
+                        }
+                        let cx = self.s(card.left);
+                        let cy = self.s(card.top);
+                        let cw = self.s(card.right - card.left);
+                        let ch = self.s(card.bottom - card.top);
+
+                        // Outer: border color fill (full rect)
+                        controls::fill_round_rect(
+                            hdc,
+                            cx, cy, cw, ch,
+                            card_radius,
+                            theme::BORDER,
+                        );
+                        // Inner: panel color fill (1px inset)
+                        let inner = RECT { left: cx + 1, top: cy + 1, right: cx + cw - 1, bottom: cy + ch - 1 };
+                        if inner.right > inner.left && inner.bottom > inner.top {
+                            controls::fill_round_rect(
+                                hdc,
+                                inner.left, inner.top,
+                                inner.right - inner.left, inner.bottom - inner.top,
+                                card_radius,
+                                p.panel,
+                            );
+                        }
+                    }
+
+                    // Section headers: 11pt, uppercase, text_dim, drawn above each card.
+                    let section_names = ["LOCATION", "WIDGET POSITION", "APPEARANCE"];
+                    let old_header_font = SelectObject(hdc, self.header_font.into());
+                    SetBkMode(hdc, TRANSPARENT);
+                    SetTextColor(hdc, controls::colorref(theme::current().text_dim));
+                    for (i, name) in section_names.iter().enumerate() {
+                        let hdr = self.section_headers[i];
+                        if hdr.left == 0 && hdr.top == 0 && hdr.right == 0 && hdr.bottom == 0 {
+                            continue;
+                        }
+                        let mut hdr_rc = RECT {
+                            left: self.s(hdr.left),
+                            top: self.s(hdr.top),
+                            right: self.s(hdr.right),
+                            bottom: self.s(hdr.bottom),
+                        };
+                        let mut wide: Vec<u16> = name.encode_utf16().collect();
+                        DrawTextW(hdc, &mut wide, &mut hdr_rc, DT_LEFT | DT_SINGLELINE | DT_NOCLIP);
+                    }
+                    SelectObject(hdc, old_header_font);
+
+                    // Tip text: italic, wrapped, text_dim color.
+                    let tip_text = "Tip: Drag the pill to reposition it. Left-click opens the forecast.";
+                    let old_font = SelectObject(hdc, self.tip_font.into());
+                    SetBkMode(hdc, TRANSPARENT);
+                    SetTextColor(hdc, controls::colorref(theme::current().text_dim));
+                    let mut wide: Vec<u16> = tip_text.encode_utf16().collect();
+                    let mut tip_rc = self.tip_rect;
+                    tip_rc.left = self.s(tip_rc.left);
+                    tip_rc.top = self.s(tip_rc.top);
+                    tip_rc.right = self.s(tip_rc.right);
+                    tip_rc.bottom = self.s(tip_rc.bottom);
+                    DrawTextW(hdc, &mut wide, &mut tip_rc, DT_LEFT | DT_WORDBREAK | DT_NOCLIP);
+                    SelectObject(hdc, old_font);
                 }
                 Some(LRESULT(1))
             }
@@ -453,6 +577,11 @@ impl WindowHandler for Dialog {
                 let hdc = HDC(wparam.0 as *mut _);
                 let brush = controls::ctl_colors(hdc, p.text, p.bg_hover, self.brushes.field);
                 Some(LRESULT(brush.0 as isize))
+            }
+            0x002C => { // WM_MEASUREITEM
+                let mis = unsafe { &mut *(lparam.0 as *mut MEASUREITEMSTRUCT) };
+                mis.itemHeight = self.s(28) as u32;
+                return Some(LRESULT(1));
             }
             WM_DRAWITEM => {
                 const ODT_COMBOBOX: u32 = 3; // winuser.h; not surfaced by the windows crate
@@ -479,7 +608,16 @@ impl WindowHandler for Dialog {
                     ButtonKind::Normal
                 };
                 let text = controls::get_text(dis.hwndItem);
-                controls::draw_button(dis, &text, self.font, kind, false);
+                let is_primary = id == ID_SAVE;
+                let is_selected = matches!(id, ID_UI_SMALL | ID_UI_MEDIUM | ID_UI_LARGE) && {
+                    let idx = match id {
+                        ID_UI_SMALL => 0,
+                        ID_UI_MEDIUM => 1,
+                        _ => 2,
+                    };
+                    idx == self.ui_size_sel
+                };
+                controls::draw_button(dis, &text, self.font, kind, false, is_primary, is_selected);
                 Some(LRESULT(1))
             }
             WM_COMMAND => {

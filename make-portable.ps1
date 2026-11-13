@@ -137,7 +137,13 @@ try {
 
     # --- build --------------------------------------------------------------
     Write-Host "Building (release, static CRT)..." -ForegroundColor Cyan
+    # Cargo writes progress to stderr, which PowerShell maps to error records. With
+    # $ErrorActionPreference = "Stop" that would abort on the first progress line, so
+    # temporarily relax it for the cargo call; exit-code failure is still caught below.
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     & $cargo build --release --locked
+    $ErrorActionPreference = $prevPref
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)" }
     if (-not (Test-Path -LiteralPath $built)) { throw "build finished but $built is missing" }
 
