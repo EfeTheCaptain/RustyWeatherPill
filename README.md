@@ -44,7 +44,7 @@ Built from scratch using the `windows` crate (Win32 API FFI) and GDI+ for high-p
 ## ⚡ Under the Hood
 
 <p align="center">
-  <img width="1000" height="193" alt="Lightweight Design" src="https://github.com/user-attachments/assets/2fd936a2-178c-47e9-8c4e-ac1341150673" />
+  <img width="995" height="130" alt="2026-11-13_06-17" src="https://github.com/user-attachments/assets/a5cec67e-3697-41e7-8237-5067d8235f44" />
 </p>
 
 Most modern desktop apps are just web browsers in disguise (Electron). RustyWeatherPill is different — built to be light, fast, and invisible until you need it.
