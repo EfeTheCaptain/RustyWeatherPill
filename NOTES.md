@@ -1,6 +1,6 @@
 # RustyWeatherPill — Notes & Documentation
 
-**Package:** `rusty_weather_pill` **v0.1.3**  
+**Package:** `rusty_weather_pill` **v0.1.4**  
 **License:** MIT  
 **Location:** `F:\AI\APPS\RustyWeatherPill\`  
 **Description:** Rust port of the C# `WeatherPill` taskbar weather app on a taskbar shell foundation. A standalone, portable Windows 11 tray widget that shows current weather in the taskbar and a forecast popup.
@@ -365,6 +365,37 @@ match code {
 
 ## Changelog
 
+### [0.1.4] — 2026-11-13
+
+#### Changed
+
+- **Visual refactor of the settings dialog** (src/ui/settings.rs):
+  - Graph-derived dark palette: `bg=0xFF18181C`, `panel=0xFF2D2D34`, `text_dim=0xFF8C8C92`, `accent=0xFF78BEFF`, `accent_soft=0xFF2A4A6A`
+  - New `BORDER` constant (0xFF46464E, matches graph AXIS) for control borders
+  - Section cards: rounded rect cards (radius 8px, panel fill, BORDER border) behind each section; headers drawn above cards with a 16px gap
+  - Section gaps increased (16px header→card, 20px card→card) for better separation
+  - Controls right-aligned inside cards with 40px right padding; labels left-aligned at 20px padding
+  - Inner top padding (16px) so controls don't touch the card border
+  - Dialog resized to 585×770
+  - Save button is primary (accent fill, dark text); Cancel and toggles use default style
+  - Selected interface-size toggle (Small/Medium/Large) renders accent-filled
+  - Tip text wrapped with `DT_WORDBREAK`, 10pt italic, `text_dim` color
+  - Dialog window corner preference set to `DWMWCP_ROUND`
+- **Controls refactor** (src/ui/controls.rs):
+  - `draw_button`: added `primary` and `selected` params; border+inset fill technique (border-color outer rect, fill-color inner rect) for clean rounded corners
+  - `ui_font`: added `italic` parameter
+- **Fullscreen detection rewrite** (src/native/taskbar.rs): changed from foreground-window `SHQueryUserNotificationState`-based to focus-independent `EnumWindows`-based scan of all top-level windows
+- **Build script fix** (make-portable.ps1): temporarily relax `$ErrorActionPreference` around `cargo build` so cargo's stderr progress lines don't abort the script
+
+#### Fixed
+
+- Buttons looking like text (no visible fill/border) — now all buttons have panel fill + BORDER border in default state
+- Controls spilling over card borders — right-aligned with 40px padding, inner top padding of 16px
+
+#### Refreshed
+
+- Portable release (`dist/RustyWeatherPill.exe` and `dist/RustyWeatherPill-portable.zip`)
+
 ### [0.1.3] — 2026-11-11
 
 #### Fixed
@@ -548,4 +579,4 @@ match code {
 
 ---
 
-*RustyWeatherPill v0.1.3 — documentation, changelog, and troubleshooting consolidated into one file.*
+*RustyWeatherPill v0.1.4 — documentation, changelog, and troubleshooting consolidated into one file.*

@@ -2,14 +2,11 @@
 
 use super::displays;
 use windows::core::w;
-use windows::Win32::Foundation::{HWND, RECT};
-use windows::Win32::Graphics::Gdi::{MonitorFromRect, MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Shell::{
-    SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, FindWindowW, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowRect,
+    EnumWindows, FindWindowExW, FindWindowW, GetAncestor, GetClassNameW, GetWindowRect,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetWindowPos, GA_ROOT, HWND_TOPMOST,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
 };
@@ -72,47 +69,86 @@ fn covers(r: &RECT, bounds: &RECT, tol: i32) -> bool {
         && r.bottom >= bounds.bottom - tol
 }
 
-/// True for the shell states that mean "a fullscreen app/game/video is running".
-fn quns_is_fullscreen(state: i32) -> bool {
-    state == QUNS_BUSY.0 || state == QUNS_RUNNING_D3D_FULL_SCREEN.0 || state == QUNS_PRESENTATION_MODE.0
+/// State carried through the `EnumWindows` callback while scanning for a fullscreen window.
+struct FullscreenScan {
+    target: RECT,
+    found: bool,
 }
 
-/// True if the foreground window is a real app covering the whole given monitor.
-pub fn is_fullscreen_app_on(bounds: &RECT) -> bool {
-    let fg = unsafe { GetForegroundWindow() };
-    if fg.is_invalid() {
-        return false;
-    }
-    // The foreground window can be a child/owned window; the root carries the real frame.
-    let root = unsafe { GetAncestor(fg, GA_ROOT) };
-    let root = if root.is_invalid() { fg } else { root };
-    if unsafe { IsIconic(root) }.as_bool() || !unsafe { IsWindowVisible(root) }.as_bool() {
-        return false;
-    }
-    match class_name(root).as_str() {
-        "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "WorkerW" | "Progman" => return false,
-        _ => {}
+/// Callback for `EnumWindows`: stops at the first window that fully covers `target`.
+unsafe extern "system" fn fullscreen_enum_proc(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
+    let scan = &mut *(lparam.0 as *mut FullscreenScan);
+    if scan.found {
+        return windows::Win32::Foundation::FALSE;
     }
 
-    // Only react to a fullscreen app on the monitor we were asked about; a game on
-    // another display must not hide this monitor's pill.
-    let target = unsafe { MonitorFromRect(bounds, MONITOR_DEFAULTTONEAREST) };
-    let window_mon = unsafe { MonitorFromWindow(root, MONITOR_DEFAULTTONEAREST) };
-    if target.is_invalid() || window_mon.is_invalid() || target != window_mon {
-        return false;
+    // The real frame is the root ancestor; owned overlays ride their owner and are skipped.
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let root = if root.is_invalid() { hwnd } else { root };
+
+    if unsafe { IsIconic(root) }.as_bool() {
+        return windows::Win32::Foundation::TRUE;
+    }
+    if !unsafe { IsWindowVisible(root) }.as_bool() {
+        return windows::Win32::Foundation::TRUE;
+    }
+
+    // Never treat shell windows or our own windows as the occupying fullscreen app.
+    let class = class_name(root);
+    if matches!(
+        class.as_str(),
+        "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "WorkerW"
+            | "Progman"
+            | "WeatherPillApp"
+            | "WeatherPillWidget"
+            | "WeatherPillForecast"
+            | "WeatherPillSettings"
+    ) {
+        return windows::Win32::Foundation::TRUE;
+    }
+
+    // Suspended UWP windows are "visible" and full-size but do not occupy the screen.
+    let mut cloaked: u32 = 0;
+    if unsafe {
+        DwmGetWindowAttribute(
+            root,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut u32 as *mut _,
+            std::mem::size_of::<u32>() as u32,
+        )
+        .is_ok() && cloaked != 0
+    } {
+        return windows::Win32::Foundation::TRUE;
     }
 
     if let Some(r) = window_rect(root) {
-        if covers(&r, bounds, FULLSCREEN_TOLERANCE) {
-            return true;
+        if covers(&r, &scan.target, FULLSCREEN_TOLERANCE) {
+            scan.found = true;
+            return windows::Win32::Foundation::FALSE;
         }
     }
+    windows::Win32::Foundation::TRUE
+}
 
-    // Exclusive/D3D fullscreen renders through a surface the HWND rectangle does not
-    // reflect, so the rect test misses it. Ask the shell, which knows about that state.
-    unsafe { SHQueryUserNotificationState() }
-        .map(|s| quns_is_fullscreen(s.0))
-        .unwrap_or(false)
+/// True if any top-level window fully covers `bounds`.
+///
+/// Focus-independent: the foreground window plays no role, so clicking the taskbar on one
+/// monitor cannot make the pill on another monitor reappear over a fullscreen game.
+/// Recomputed fresh from OS state on every call, never cached.
+pub fn is_fullscreen_app_on(bounds: &RECT) -> bool {
+    let mut scan = FullscreenScan {
+        target: *bounds,
+        found: false,
+    };
+    unsafe {
+        let _ = EnumWindows(
+            Some(fullscreen_enum_proc),
+            LPARAM(&mut scan as *mut FullscreenScan as isize),
+        );
+    }
+    scan.found
 }
 
 /// Re-assert top-most z-order without moving/activating.
@@ -155,17 +191,5 @@ mod tests {
         assert!(!covers(&rect(0, 0, 1920, 1040), &bounds, FULLSCREEN_TOLERANCE));
         // Small window never qualifies.
         assert!(!covers(&rect(100, 100, 800, 600), &bounds, FULLSCREEN_TOLERANCE));
-    }
-
-    #[test]
-    fn quns_busy_d3d_and_presentation_are_fullscreen() {
-        assert!(quns_is_fullscreen(QUNS_BUSY.0));
-        assert!(quns_is_fullscreen(QUNS_RUNNING_D3D_FULL_SCREEN.0));
-        assert!(quns_is_fullscreen(QUNS_PRESENTATION_MODE.0));
-        // Accepting notifications / quiet time / away / store-app are not treated as fullscreen.
-        assert!(!quns_is_fullscreen(1));
-        assert!(!quns_is_fullscreen(5));
-        assert!(!quns_is_fullscreen(6));
-        assert!(!quns_is_fullscreen(7));
     }
 }
